@@ -12,7 +12,9 @@ MODELS_DIR = os.path.join(OUTPUT_DIR, "models")
 SCAD_DIR = os.path.join(BASE_DIR, "scad")
 
 # AI model paths
-SAM_CHECKPOINT_PATH = os.path.join(BASE_DIR, "models", "sam_vit_h.pth")
+SAM2_CHECKPOINT_PATH = os.getenv("SAM2_CHECKPOINT_PATH", os.path.join(BASE_DIR, "models", "sam2_vit_b.pth"))
+SAM2_MODEL_TYPE = os.getenv("SAM2_MODEL_TYPE", "vit_b")  # Using vit_b for better CPU performance
+SAM2_USE_GPU = os.getenv("SAM2_USE_GPU", "False").lower() == "true"  # Default to CPU for macOS compatibility
 THREESTUDIO_PATH = os.path.join(BASE_DIR, "threestudio")
 
 # Venice.ai API configuration

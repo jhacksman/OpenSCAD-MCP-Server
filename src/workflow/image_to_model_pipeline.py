@@ -76,9 +76,16 @@ class ImageToModelPipeline:
             masks_dir = os.path.join(self.output_dir, "masks", pipeline_id)
             sam_result = self._segment_image(image_path, masks_dir, sam_params)
             
-            # Get the best mask (highest score)
-            best_mask_idx = sam_result["scores"].index(max(sam_result["scores"]))
-            best_mask_path = sam_result["masked_images"][best_mask_idx]
+            # Get the best mask (highest score or first mask if no scores)
+            if "scores" in sam_result and sam_result["scores"]:
+                best_mask_idx = sam_result["scores"].index(max(sam_result["scores"]))
+                best_mask_path = sam_result["mask_paths"][best_mask_idx]
+            else:
+                # If no scores available, use the first mask
+                best_mask_path = sam_result["mask_paths"][0] if sam_result.get("mask_paths") else None
+                
+            if not best_mask_path:
+                raise ValueError("No valid mask generated from segmentation")
             
             # Step 3: Create 3D model with threestudio
             threestudio_result = self._generate_3d_model(best_mask_path, threestudio_params)
@@ -119,7 +126,7 @@ class ImageToModelPipeline:
         
         # Default parameters
         default_params = {
-            "model": "flux",
+            "model": "fluently-xl",  # Default to fastest model
             "width": 1024,
             "height": 1024
         }
@@ -153,14 +160,24 @@ class ImageToModelPipeline:
         """
         logger.info(f"Segmenting image: {image_path}")
         
-        # Segment image
-        result = self.sam_segmenter.segment_image(
-            image_path=image_path,
-            output_dir=output_dir,
-            **(params or {})
-        )
+        # Segment image with SAM2
+        # Check if points are provided in params
+        points = params.get("points") if params else None
         
-        logger.info(f"Image segmented, {result['mask_count']} masks generated")
+        if points:
+            result = self.sam_segmenter.segment_image(
+                image_path=image_path,
+                points=points,
+                output_dir=output_dir
+            )
+        else:
+            # Use automatic point generation
+            result = self.sam_segmenter.segment_with_auto_points(
+                image_path=image_path,
+                output_dir=output_dir
+            )
+        
+        logger.info(f"Image segmented, {result.get('num_masks', 0)} masks generated")
         return result
     
     def _generate_3d_model(self, image_path: str,

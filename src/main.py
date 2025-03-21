@@ -2,7 +2,7 @@ import os
 import logging
 import uuid
 import json
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 from fastapi import FastAPI, Request, Response, HTTPException
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,6 +22,7 @@ from src.utils.cad_exporter import CADExporter
 from src.visualization.headless_renderer import HeadlessRenderer
 from src.printer_discovery.printer_discovery import PrinterDiscovery, PrinterInterface
 from src.ai.venice_api import VeniceImageGenerator
+from src.ai.sam_segmentation import SAMSegmenter
 
 # Configure logging
 logging.basicConfig(
@@ -60,6 +61,27 @@ printer_discovery = PrinterDiscovery()
 
 # Initialize AI components
 venice_generator = VeniceImageGenerator(VENICE_API_KEY, IMAGES_DIR)
+
+# SAM2 segmenter will be initialized on first use to avoid loading the model unnecessarily
+sam_segmenter = None
+
+def get_sam_segmenter():
+    """
+    Get or initialize the SAM2 segmenter.
+    
+    Returns:
+        SAMSegmenter instance
+    """
+    global sam_segmenter
+    if sam_segmenter is None:
+        logger.info("Initializing SAM2 segmenter")
+        sam_segmenter = SAMSegmenter(
+            model_type=SAM2_MODEL_TYPE,
+            checkpoint_path=SAM2_CHECKPOINT_PATH,
+            use_gpu=SAM2_USE_GPU,
+            output_dir=MASKS_DIR
+        )
+    return sam_segmenter
 
 # Store models in memory
 models = {}
@@ -603,6 +625,48 @@ def generate_image(prompt: str, model: str = "fluently-xl") -> Dict[str, Any]:
     }
     
     return response
+
+# Add SAM2 segmentation tool
+@mcp_server.tool
+def segment_image(image_path: str, points: Optional[List[Tuple[int, int]]] = None) -> Dict[str, Any]:
+    """
+    Segment objects in an image using SAM2 (Segment Anything Model 2).
+    
+    Args:
+        image_path: Path to the input image
+        points: Optional list of (x, y) points to guide segmentation
+               If not provided, automatic segmentation will be used
+        
+    Returns:
+        Dictionary with segmentation masks and metadata
+    """
+    # Get or initialize SAM2 segmenter
+    sam_segmenter = get_sam_segmenter()
+    
+    # Generate a unique segmentation ID
+    segmentation_id = str(uuid.uuid4())
+    
+    try:
+        # Perform segmentation
+        if points:
+            result = sam_segmenter.segment_image(image_path, points)
+        else:
+            result = sam_segmenter.segment_with_auto_points(image_path)
+        
+        # Create response
+        response = {
+            "segmentation_id": segmentation_id,
+            "image_path": image_path,
+            "mask_paths": result.get("mask_paths", []),
+            "num_masks": result.get("num_masks", 0),
+            "points_used": points if points else result.get("points", [])
+        }
+        
+        return response
+    except Exception as e:
+        logger.error(f"Error segmenting image: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error segmenting image: {str(e)}")
+
 
 # FastAPI routes
 @app.post("/tool_call")
