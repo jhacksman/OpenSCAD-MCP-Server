@@ -60,7 +60,7 @@ class VeniceImageGenerator:
             "width": width,
             "steps": 20,
             "return_binary": False,
-            "hide_watermark": False,
+            "hide_watermark": True,  # Remove watermark as requested
             "format": "png",
             "embed_exif_metadata": False
         }
