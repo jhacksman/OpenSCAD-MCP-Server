@@ -11,12 +11,17 @@ from fastapi.templating import Jinja2Templates
 import uvicorn
 from mcp import MCPServer, MCPTool, MCPToolCall, MCPToolCallResult
 
+# Import configuration
+from src.config import *
+
+# Import components
 from src.nlp.parameter_extractor import ParameterExtractor
 from src.models.code_generator import CodeGenerator
 from src.openscad_wrapper.wrapper import OpenSCADWrapper
 from src.utils.cad_exporter import CADExporter
 from src.visualization.headless_renderer import HeadlessRenderer
 from src.printer_discovery.printer_discovery import PrinterDiscovery, PrinterInterface
+from src.ai.venice_api import VeniceImageGenerator
 
 # Configure logging
 logging.basicConfig(
@@ -47,11 +52,14 @@ os.makedirs("static", exist_ok=True)
 
 # Initialize components
 parameter_extractor = ParameterExtractor()
-code_generator = CodeGenerator()
+code_generator = CodeGenerator("scad", "output")
 openscad_wrapper = OpenSCADWrapper("scad", "output")
 cad_exporter = CADExporter()
 headless_renderer = HeadlessRenderer()
 printer_discovery = PrinterDiscovery()
+
+# Initialize AI components
+venice_generator = VeniceImageGenerator(VENICE_API_KEY, IMAGES_DIR)
 
 # Store models in memory
 models = {}
@@ -63,33 +71,33 @@ mcp_server = MCPServer()
 # Mount static files
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# Set up templates
+# Create Jinja2 templates
 templates = Jinja2Templates(directory="templates")
 
-# Create a simple HTML template for previewing models
+# Create model preview template
 with open("templates/preview.html", "w") as f:
     f.write("""
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>OpenSCAD Model Preview</title>
     <style>
         body {
             font-family: Arial, sans-serif;
             margin: 0;
-            padding: 20px;
+            padding: 0;
             background-color: #f5f5f5;
         }
         .container {
             max-width: 1200px;
             margin: 0 auto;
-            background-color: white;
             padding: 20px;
-            border-radius: 5px;
-            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
         }
         h1 {
             color: #333;
+            margin-bottom: 20px;
         }
         .preview-container {
             display: flex;
@@ -327,7 +335,7 @@ def export_model(model_id: str, format: str = "csg") -> Dict[str, Any]:
     
     Args:
         model_id: ID of the model to export
-        format: Format to export to (csg, amf, 3mf, scad, etc.)
+        format: Format to export to (csg, stl, obj, etc.)
         
     Returns:
         Dictionary with export information
@@ -341,12 +349,12 @@ def export_model(model_id: str, format: str = "csg") -> Dict[str, Any]:
     
     # Check if format is supported
     supported_formats = cad_exporter.get_supported_formats()
-    if format.lower() not in supported_formats:
+    if format not in supported_formats:
         raise ValueError(f"Format {format} not supported. Supported formats: {', '.join(supported_formats)}")
     
-    # Export to the specified format
+    # Export model
     success, model_file, error = cad_exporter.export_model(
-        model_info["scad_file"], 
+        model_info["scad_file"],
         format,
         model_info["parameters"],
         metadata={
@@ -356,7 +364,7 @@ def export_model(model_id: str, format: str = "csg") -> Dict[str, Any]:
     )
     
     if not success:
-        raise ValueError(f"Failed to export model to {format}: {error}")
+        raise ValueError(f"Failed to export model: {error}")
     
     # Update model information
     models[model_id]["model_file"] = model_file
@@ -366,8 +374,8 @@ def export_model(model_id: str, format: str = "csg") -> Dict[str, Any]:
     response = {
         "model_id": model_id,
         "format": format,
-        "download_url": f"/download/{model_id}",
-        "format_description": cad_exporter.get_format_description(format)
+        "model_file": model_file,
+        "download_url": f"/download/{model_id}"
     }
     
     return response
@@ -389,8 +397,7 @@ def discover_printers() -> Dict[str, Any]:
     
     # Create response
     response = {
-        "printers": discovered_printers,
-        "count": len(discovered_printers)
+        "printers": discovered_printers
     }
     
     return response
@@ -427,9 +434,8 @@ def connect_to_printer(printer_id: str) -> Dict[str, Any]:
     # Create response
     response = {
         "printer_id": printer_id,
-        "name": printer_info["name"],
-        "type": printer_info["type"],
-        "status": "connected"
+        "connected": True,
+        "printer_info": printer_info
     }
     
     return response
@@ -444,7 +450,7 @@ def print_model(model_id: str, printer_id: str) -> Dict[str, Any]:
         printer_id: ID of the printer to print on
         
     Returns:
-        Dictionary with print information
+        Dictionary with print job information
     """
     # Check if model exists
     if model_id not in models:
@@ -462,7 +468,7 @@ def print_model(model_id: str, printer_id: str) -> Dict[str, Any]:
     model_info = models[model_id]
     printer_info = printers[printer_id]
     
-    # Check if model has been exported
+    # Check if model has been exported to a printable format
     if not model_info.get("model_file"):
         raise ValueError(f"Model with ID {model_id} has not been exported")
     
@@ -475,9 +481,9 @@ def print_model(model_id: str, printer_id: str) -> Dict[str, Any]:
     
     # Create response
     response = {
-        "job_id": job_id,
         "model_id": model_id,
         "printer_id": printer_id,
+        "job_id": job_id,
         "status": "printing"
     }
     
@@ -489,7 +495,7 @@ def get_printer_status(printer_id: str) -> Dict[str, Any]:
     Get the status of a printer.
     
     Args:
-        printer_id: ID of the printer
+        printer_id: ID of the printer to get status for
         
     Returns:
         Dictionary with printer status
@@ -512,8 +518,6 @@ def get_printer_status(printer_id: str) -> Dict[str, Any]:
     # Create response
     response = {
         "printer_id": printer_id,
-        "name": printer_info["name"],
-        "type": printer_info["type"],
         "status": status
     }
     
@@ -526,7 +530,7 @@ def cancel_print_job(printer_id: str, job_id: str) -> Dict[str, Any]:
     
     Args:
         printer_id: ID of the printer
-        job_id: ID of the print job
+        job_id: ID of the print job to cancel
         
     Returns:
         Dictionary with cancellation information
@@ -551,50 +555,108 @@ def cancel_print_job(printer_id: str, job_id: str) -> Dict[str, Any]:
     
     # Create response
     response = {
-        "job_id": job_id,
         "printer_id": printer_id,
+        "job_id": job_id,
         "status": "cancelled"
     }
     
     return response
 
-# Define FastAPI routes
-@app.post("/mcp/tools/{tool_name}")
-async def handle_tool_call(tool_name: str, request: Request):
-    """Handle MCP tool calls."""
+# Add Venice.ai image generation tool
+@mcp_server.tool
+def generate_image(prompt: str, model: str = "fluently-xl") -> Dict[str, Any]:
+    """
+    Generate an image using Venice.ai's image generation models.
+    
+    Args:
+        prompt: Text description for image generation
+        model: Model to use (default: fluently-xl). Options include:
+            - "fluently-xl" (fastest, 2.30s): Quick generation with good quality
+            - "flux-dev" (high quality): Detailed, premium image quality
+            - "flux-dev-uncensored": Uncensored version of flux-dev model
+            - "stable-diffusion-3.5": Standard stable diffusion model
+            - "pony-realism": Specialized for realistic outputs
+            - "lustify-sdxl": Artistic stylization model
+            
+            You can also use natural language like:
+            - "fastest model", "quick generation", "efficient"
+            - "high quality", "detailed", "premium quality"
+            - "realistic", "photorealistic"
+            - "artistic", "stylized", "creative"
+        
+    Returns:
+        Dictionary with image information
+    """
+    # Generate a unique image ID
+    image_id = str(uuid.uuid4())
+    
+    # Generate image
+    result = venice_generator.generate_image(prompt, model)
+    
+    # Create response
+    response = {
+        "image_id": image_id,
+        "prompt": prompt,
+        "model": model,
+        "image_path": result.get("local_path"),
+        "image_url": result.get("image_url")
+    }
+    
+    return response
+
+# FastAPI routes
+@app.post("/tool_call")
+async def handle_tool_call(request: Request) -> JSONResponse:
+    """
+    Handle a tool call from a client.
+    
+    Args:
+        request: FastAPI request object
+        
+    Returns:
+        JSON response with tool call result
+    """
+    # Parse request
+    data = await request.json()
+    
+    # Check if tool name is provided
+    if "tool_name" not in data:
+        raise HTTPException(status_code=400, detail="Tool name is required")
+    
+    # Check if tool exists
+    tool_name = data["tool_name"]
+    if tool_name not in mcp_server.tools:
+        raise HTTPException(status_code=404, detail=f"Tool {tool_name} not found")
+    
+    # Get tool parameters
+    tool_params = data.get("tool_params", {})
+    
+    # Call tool
     try:
-        # Parse request body
-        body = await request.json()
-        
-        # Create tool call
-        tool_call = MCPToolCall(
-            tool_name=tool_name,
-            tool_args=body
-        )
-        
-        # Execute tool call
-        result = await mcp_server.execute_tool_call(tool_call)
-        
-        # Return result
-        return JSONResponse(content=result.tool_result)
+        result = mcp_server.tools[tool_name](**tool_params)
+        return JSONResponse(content=result)
     except Exception as e:
-        logger.error(f"Error handling tool call: {str(e)}")
+        logger.error(f"Error calling tool {tool_name}: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/ui/preview/{model_id}")
-async def preview_model(model_id: str, request: Request):
-    """Render model preview page."""
+async def preview_model(request: Request, model_id: str) -> Response:
+    """
+    Render a preview page for a model.
+    
+    Args:
+        request: FastAPI request object
+        model_id: ID of the model to preview
+        
+    Returns:
+        HTML response with model preview
+    """
     # Check if model exists
     if model_id not in models:
         raise HTTPException(status_code=404, detail=f"Model with ID {model_id} not found")
     
     # Get model information
     model_info = models[model_id]
-    
-    # Create preview URLs
-    preview_urls = {}
-    for view, path in model_info["previews"].items():
-        preview_urls[view] = f"/preview/{model_id}/{view}"
     
     # Render template
     return templates.TemplateResponse(
@@ -603,13 +665,22 @@ async def preview_model(model_id: str, request: Request):
             "request": request,
             "model_id": model_id,
             "parameters": model_info["parameters"],
-            "previews": preview_urls
+            "previews": model_info["previews"]
         }
     )
 
-@app.get("/preview/{model_id}/{view}")
-async def get_preview(model_id: str, view: str):
-    """Get model preview image."""
+@app.get("/preview/{view}/{model_id}")
+async def get_preview(view: str, model_id: str) -> FileResponse:
+    """
+    Get a preview image for a model.
+    
+    Args:
+        view: View to get preview for
+        model_id: ID of the model
+        
+    Returns:
+        Image file response
+    """
     # Check if model exists
     if model_id not in models:
         raise HTTPException(status_code=404, detail=f"Model with ID {model_id} not found")
@@ -625,8 +696,16 @@ async def get_preview(model_id: str, view: str):
     return FileResponse(model_info["previews"][view])
 
 @app.get("/download/{model_id}")
-async def download_model(model_id: str):
-    """Download model file."""
+async def download_model(model_id: str) -> FileResponse:
+    """
+    Download a model file.
+    
+    Args:
+        model_id: ID of the model to download
+        
+    Returns:
+        Model file response
+    """
     # Check if model exists
     if model_id not in models:
         raise HTTPException(status_code=404, detail=f"Model with ID {model_id} not found")
@@ -636,7 +715,7 @@ async def download_model(model_id: str):
     
     # Check if model file exists
     if not model_info.get("model_file"):
-        raise HTTPException(status_code=404, detail=f"Model file not found")
+        raise HTTPException(status_code=404, detail=f"Model file for model with ID {model_id} not found")
     
     # Return model file
     return FileResponse(
@@ -645,8 +724,13 @@ async def download_model(model_id: str):
     )
 
 @app.get("/")
-async def root():
-    """Root endpoint."""
+async def root() -> Dict[str, Any]:
+    """
+    Root endpoint.
+    
+    Returns:
+        Dictionary with server information
+    """
     return {
         "name": "OpenSCAD MCP Server",
         "version": "1.0.0",
@@ -654,6 +738,6 @@ async def root():
         "tools": list(mcp_server.tools.keys())
     }
 
-# Start server
+# Run server
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run("src.main:app", host="0.0.0.0", port=8000, reload=True)
