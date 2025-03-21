@@ -19,10 +19,10 @@ class SAMSegmenter:
     def __init__(self, model_type: str = "vit_h", checkpoint_path: Optional[str] = None,
                 use_gpu: bool = True, output_dir: str = "output/masks"):
         """
-        Initialize the SAM segmenter.
+        Initialize the SAM2 segmenter.
         
         Args:
-            model_type: SAM model type ("vit_h", "vit_l", "vit_b")
+            model_type: SAM2 model type ("vit_h", "vit_l", "vit_b")
             checkpoint_path: Path to model checkpoint
             use_gpu: Whether to use GPU for inference
             output_dir: Directory to store segmentation results
@@ -41,42 +41,42 @@ class SAMSegmenter:
     
     def _initialize_model(self) -> None:
         """
-        Initialize the SAM model.
+        Initialize the SAM2 model.
         
-        Note: This requires PyTorch and the segment-anything package to be installed.
+        Note: This requires PyTorch and the segment-anything-2 package to be installed.
         """
         try:
-            # Import here to avoid dependency issues if SAM is not installed
+            # Import here to avoid dependency issues if SAM2 is not installed
             import torch
-            from segment_anything import sam_model_registry, SamPredictor
+            from segment_anything_2 import sam_model_registry, SamPredictor
             
             if not self.checkpoint_path:
-                raise ValueError("SAM checkpoint path is required")
+                raise ValueError("SAM2 checkpoint path is required")
             
             # Check if checkpoint exists
             if not os.path.exists(self.checkpoint_path):
-                raise FileNotFoundError(f"SAM checkpoint not found at {self.checkpoint_path}")
+                raise FileNotFoundError(f"SAM2 checkpoint not found at {self.checkpoint_path}")
             
             # Determine device
             device = "cuda" if self.use_gpu and torch.cuda.is_available() else "cpu"
             
-            # Load SAM model
+            # Load SAM2 model
             self.model = sam_model_registry[self.model_type](checkpoint=self.checkpoint_path)
             self.model.to(device=device)
             self.predictor = SamPredictor(self.model)
             
-            logger.info(f"Initialized SAM model ({self.model_type}) on {device}")
+            logger.info(f"Initialized SAM2 model ({self.model_type}) on {device}")
         except ImportError as e:
             logger.error(f"Required packages not installed: {str(e)}")
             raise
         except Exception as e:
-            logger.error(f"Error initializing SAM model: {str(e)}")
+            logger.error(f"Error initializing SAM2 model: {str(e)}")
             raise
     
     def segment_image(self, image_path: str, points: Optional[List[Tuple[int, int]]] = None,
                      output_dir: Optional[str] = None) -> Dict[str, Any]:
         """
-        Segment objects in an image.
+        Segment objects in an image using SAM2.
         
         Args:
             image_path: Path to input image
@@ -177,7 +177,7 @@ class SAMSegmenter:
     def segment_with_auto_points(self, image_path: str, num_points: int = 5,
                                output_dir: Optional[str] = None) -> Dict[str, Any]:
         """
-        Segment image using automatically generated points.
+        Segment image using automatically generated points with SAM2.
         
         Args:
             image_path: Path to input image
