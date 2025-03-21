@@ -1,0 +1,404 @@
+import os
+import logging
+import uuid
+import json
+from typing import Dict, Any, List, Optional, Tuple
+from fastapi import FastAPI, Request, Response, HTTPException
+from fastapi.responses import JSONResponse, FileResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+import uvicorn
+from mcp import MCPServer, MCPTool, MCPToolCall, MCPToolCallResult
+
+# Import configuration
+from src.config import *
+
+# Import components
+from src.nlp.parameter_extractor import ParameterExtractor
+from src.models.code_generator import CodeGenerator
+from src.openscad_wrapper.wrapper import OpenSCADWrapper
+from src.utils.cad_exporter import CADExporter
+from src.visualization.headless_renderer import HeadlessRenderer
+from src.printer_discovery.printer_discovery import PrinterDiscovery, PrinterInterface
+
+# Import AI components
+from src.ai.venice_api import VeniceImageGenerator
+from src.ai.gemini_api import GeminiImageGenerator
+from src.models.cuda_mvs import CUDAMultiViewStereo
+from src.workflow.image_approval import ImageApprovalTool
+from src.workflow.multi_view_to_model_pipeline import MultiViewToModelPipeline
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# Create FastAPI app
+app = FastAPI(title="OpenSCAD MCP Server")
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Create directories
+os.makedirs("scad", exist_ok=True)
+os.makedirs("output", exist_ok=True)
+os.makedirs("output/models", exist_ok=True)
+os.makedirs("output/preview", exist_ok=True)
+os.makedirs("output/images", exist_ok=True)
+os.makedirs("output/multi_view", exist_ok=True)
+os.makedirs("output/approved_images", exist_ok=True)
+os.makedirs("templates", exist_ok=True)
+os.makedirs("static", exist_ok=True)
+
+# Initialize components
+parameter_extractor = ParameterExtractor()
+code_generator = CodeGenerator("scad", "output")
+openscad_wrapper = OpenSCADWrapper("scad", "output")
+cad_exporter = CADExporter()
+headless_renderer = HeadlessRenderer()
+printer_discovery = PrinterDiscovery()
+
+# Initialize AI components
+venice_generator = None
+gemini_generator = None
+cuda_mvs = None
+approval_tool = None
+multi_view_pipeline = None
+
+# Initialize Venice.ai generator if API key is available
+if VENICE_API_KEY:
+    venice_generator = VeniceImageGenerator(VENICE_API_KEY, IMAGES_DIR)
+    logger.info("Venice.ai image generator initialized")
+else:
+    logger.info("Venice.ai API key not provided, skipping initialization")
+
+# Initialize Google Gemini generator if API key is available
+if GEMINI_API_KEY:
+    gemini_generator = GeminiImageGenerator(GEMINI_API_KEY, IMAGES_DIR)
+    logger.info("Google Gemini image generator initialized")
+else:
+    logger.warning("Google Gemini API key not provided, multi-view workflow will not be available")
+
+# Initialize CUDA MVS if path is available
+if os.path.exists(CUDA_MVS_PATH):
+    cuda_mvs = CUDAMultiViewStereo(CUDA_MVS_PATH, MODELS_DIR)
+    logger.info("CUDA Multi-View Stereo initialized")
+else:
+    logger.warning(f"CUDA MVS not found at {CUDA_MVS_PATH}, 3D reconstruction will not be available")
+
+# Initialize image approval tool
+approval_tool = ImageApprovalTool(APPROVED_IMAGES_DIR)
+logger.info("Image approval tool initialized")
+
+# Initialize multi-view pipeline if required components are available
+if gemini_generator and cuda_mvs:
+    multi_view_pipeline = MultiViewToModelPipeline(
+        gemini_generator=gemini_generator,
+        venice_generator=venice_generator,
+        cuda_mvs=cuda_mvs,
+        openscad_wrapper=openscad_wrapper,
+        approval_tool=approval_tool,
+        output_dir=OUTPUT_DIR
+    )
+    logger.info("Multi-view to model pipeline initialized")
+else:
+    logger.warning("Multi-view to model pipeline not initialized due to missing components")
+
+# Store models in memory
+models = {}
+printers = {}
+
+# Create MCP server
+mcp_server = MCPServer()
+
+# Mount static files
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# Create Jinja2 templates
+templates = Jinja2Templates(directory="templates")
+
+# Create model preview template
+with open("templates/preview.html", "w") as f:
+    f.write("""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenSCAD Model Preview</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 20px;
+        }
+        .preview-container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+            margin-top: 20px;
+        }
+        .preview-image {
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            padding: 10px;
+            background-color: white;
+        }
+        .preview-image img {
+            max-width: 100%;
+            height: auto;
+        }
+        .preview-image h3 {
+            margin-top: 10px;
+            margin-bottom: 5px;
+            color: #555;
+        }
+        .parameters {
+            margin-top: 20px;
+            background-color: #f9f9f9;
+            padding: 15px;
+            border-radius: 5px;
+            border: 1px solid #eee;
+        }
+        .parameters h2 {
+            margin-top: 0;
+            color: #333;
+        }
+        .parameters table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        .parameters table th, .parameters table td {
+            padding: 8px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        .parameters table th {
+            background-color: #f2f2f2;
+        }
+        .actions {
+            margin-top: 20px;
+            display: flex;
+            gap: 10px;
+        }
+        .actions button {
+            padding: 10px 15px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .actions button:hover {
+            background-color: #45a049;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>OpenSCAD Model Preview: {{ model_id }}</h1>
+        
+        <div class="parameters">
+            <h2>Parameters</h2>
+            <table>
+                <tr>
+                    <th>Parameter</th>
+                    <th>Value</th>
+                </tr>
+                {% for key, value in parameters.items() %}
+                <tr>
+                    <td>{{ key }}</td>
+                    <td>{{ value }}</td>
+                </tr>
+                {% endfor %}
+            </table>
+        </div>
+        
+        <div class="preview-container">
+            {% for view, image_path in previews.items() %}
+            <div class="preview-image">
+                <h3>{{ view|title }} View</h3>
+                <img src="{{ image_path }}" alt="{{ view }} view">
+            </div>
+            {% endfor %}
+        </div>
+        
+        <div class="actions">
+            <button onclick="window.location.href='/download/{{ model_id }}'">Download Model</button>
+        </div>
+    </div>
+</body>
+</html>
+    """)
+
+# Create multi-view approval template
+with open("templates/multi_view_approval.html", "w") as f:
+    f.write("""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Multi-View Image Approval</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 20px;
+        }
+        .images-container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+            margin-top: 20px;
+        }
+        .image-card {
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            padding: 10px;
+            background-color: white;
+            width: calc(50% - 20px);
+            box-sizing: border-box;
+        }
+        .image-card img {
+            max-width: 100%;
+            height: auto;
+        }
+        .image-card h3 {
+            margin-top: 10px;
+            margin-bottom: 5px;
+            color: #555;
+        }
+        .image-card .metadata {
+            font-size: 0.9em;
+            color: #777;
+            margin-bottom: 10px;
+        }
+        .image-card .actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 10px;
+        }
+        .image-card .actions button {
+            padding: 8px 12px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .approve-btn {
+            background-color: #4CAF50;
+            color: white;
+        }
+        .approve-btn:hover {
+            background-color: #45a049;
+        }
+        .deny-btn {
+            background-color: #f44336;
+            color: white;
+        }
+        .deny-btn:hover {
+            background-color: #d32f2f;
+        }
+        .submit-container {
+            margin-top: 20px;
+            text-align: center;
+        }
+        .submit-container button {
+            padding: 10px 20px;
+            background-color: #2196F3;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 1.1em;
+        }
+        .submit-container button:hover {
+            background-color: #0b7dda;
+        }
+    </style>
+    <script>
+        function toggleApproval(id, approved) {
+            const card = document.getElementById(`card-${id}`);
+            const approveBtn = document.getElementById(`approve-${id}`);
+            const denyBtn = document.getElementById(`deny-${id}`);
+            
+            if (approved) {
+                card.style.borderColor = '#4CAF50';
+                approveBtn.disabled = true;
+                denyBtn.disabled = false;
+            } else {
+                card.style.borderColor = '#f44336';
+                approveBtn.disabled = false;
+                denyBtn.disabled = true;
+            }
+            
+            document.getElementById(`approval-${id}`).value = approved;
+        }
+        
+        function submitApprovals() {
+            document.getElementById('approval-form').submit();
+        }
+    </script>
+</head>
+<body>
+    <div class="container">
+        <h1>Multi-View Image Approval</h1>
+        <p>Please approve or deny each image for 3D reconstruction.</p>
+        
+        <form id="approval-form" action="/approve_images" method="post">
+            <input type="hidden" name="pipeline_id" value="{{ pipeline_id }}">
+            
+            <div class="images-container">
+                {% for image in images %}
+                <div id="card-{{ image.approval_id }}" class="image-card">
+                    <h3>{{ image.metadata.view_direction }}</h3>
+                    <div class="metadata">
+                        <p>{{ image.metadata.prompt }}</p>
+                    </div>
+                    <img src="{{ image.image_url }}" alt="{{ image.metadata.view_direction }}">
+                    <input type="hidden" id="approval-{{ image.approval_id }}" name="approvals[{{ image.approval_id }}]" value="false">
+                    <div class="actions">
+                        <button id="approve-{{ image.approval_id }}" type="button" class="approve-btn" onclick="toggleApproval('{{ image.approval_id }}', true)">Approve</button>
+                        <button id="deny-{{ image.approval_id }}" type="button" class="deny-btn" onclick="toggleApproval('{{ image.approval_id }}', false)">Deny</button>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+            
+            <div class="submit-container">
+                <button type="button" onclick="submitApprovals()">Submit Approvals</button>
+            </div>
+        </form>
+    </div>
+</body>
+</html>
+    """)

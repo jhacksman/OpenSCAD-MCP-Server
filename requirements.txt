@@ -9,6 +9,7 @@ git+https://github.com/modelcontextprotocol/python-sdk.git
 
 # Image processing
 pillow>=9.5.0
+opencv-python>=4.7.0
 
 # HTTP client
 requests>=2.28.0
@@ -17,23 +18,28 @@ requests>=2.28.0
 python-dotenv>=1.0.0
 pyyaml>=6.0
 jinja2>=3.1.2
+numpy>=1.24.0
+uuid>=1.30.0
 
-# Image Generation - Venice.ai API
+# Image Generation - Venice.ai API (optional)
 # (using existing requests and python-dotenv)
 
-# Object Segmentation - SAM2
-torch>=2.0.0
-torchvision>=0.15.0
-opencv-python>=4.7.0
-segment-anything-2>=1.0
+# Image Generation - Google Gemini API
+# (using existing requests and python-dotenv)
+google-generativeai>=0.3.0
 
-# 3D Model Creation - threestudio
-ninja>=1.11.0
-pytorch3d>=0.7.4
+# 3D Reconstruction - CUDA Multi-View Stereo
+open3d>=0.17.0
 trimesh>=3.21.0
-numpy>=1.24.0
 
 # For development
 pytest>=7.3.1
 black>=23.3.0
 isort>=5.12.0
+
+# Deprecated dependencies (kept for reference)
+# segment-anything-2>=1.0
+# torch>=2.0.0
+# torchvision>=0.15.0
+# pytorch3d>=0.7.4
+# ninja>=1.11.0
