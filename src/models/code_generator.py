@@ -11,16 +11,18 @@ class OpenSCADCodeGenerator:
     Implements translation of requirements to OpenSCAD primitives and modules.
     """
     
-    def __init__(self, scad_templates_dir: str, output_dir: str):
+    def __init__(self, scad_templates_dir: str, output_dir: str, ai_service=None):
         """
         Initialize the code generator.
         
         Args:
             scad_templates_dir: Directory containing SCAD template files
             output_dir: Directory to store generated SCAD files
+            ai_service: Optional AI service for enhanced code generation
         """
         self.scad_templates_dir = scad_templates_dir
         self.output_dir = output_dir
+        self.ai_service = ai_service
         
         # Create output directory if it doesn't exist
         os.makedirs(output_dir, exist_ok=True)
@@ -39,7 +41,9 @@ class OpenSCADCodeGenerator:
             'rounded_cylinder': 'rounded_cylinder',
             'torus': 'torus',
             'hexagonal_prism': 'hexagonal_prism',
-            'text': 'text_3d'
+            'text': 'text_3d',
+            'prism': 'triangular_prism',
+            'custom': 'custom_shape'
         }
         
         # Parameter mapping from natural language to OpenSCAD parameters
@@ -56,16 +60,23 @@ class OpenSCADCodeGenerator:
             'corner_radius': 'corner_radius',
             'text': 'text',
             'size': 'size',
-            'font': 'font'
+            'font': 'font',
+            'base_radius': 'base_radius',
+            'major_radius': 'major_radius',
+            'minor_radius': 'minor_radius',
+            'angle': 'angle',
+            'scale': 'scale',
+            'resolution': 'resolution'
         }
     
-    def generate_code(self, model_type: str, parameters: Dict[str, Any]) -> str:
+    def generate_code(self, model_type: str, parameters: Dict[str, Any], description: Optional[str] = None) -> str:
         """
         Generate OpenSCAD code for a given model type and parameters.
         
         Args:
             model_type: Type of model to generate
             parameters: Dictionary of parameters for the model
+            description: Optional natural language description for AI-driven generation
             
         Returns:
             Path to the generated SCAD file
@@ -74,16 +85,20 @@ class OpenSCADCodeGenerator:
         model_id = str(uuid.uuid4())
         scad_file = os.path.join(self.output_dir, f"{model_id}.scad")
         
-        # Get the module name for the model type
-        module_name = self.shape_module_map.get(model_type)
-        if not module_name:
-            raise ValueError(f"Unsupported model type: {model_type}")
-        
-        # Map parameters to OpenSCAD parameter names
-        scad_params = self._map_parameters(parameters)
-        
-        # Generate the OpenSCAD code
-        scad_code = self._generate_scad_code(module_name, scad_params)
+        # Check if we should use AI-driven generation for complex models
+        if model_type == 'custom' and description and self.ai_service:
+            scad_code = self._generate_ai_driven_code(description, parameters)
+        else:
+            # Get the module name for the model type
+            module_name = self.shape_module_map.get(model_type)
+            if not module_name:
+                raise ValueError(f"Unsupported model type: {model_type}")
+            
+            # Map parameters to OpenSCAD parameter names
+            scad_params = self._map_parameters(parameters)
+            
+            # Generate the OpenSCAD code
+            scad_code = self._generate_scad_code(module_name, scad_params)
         
         # Write the code to a file
         with open(scad_file, 'w') as f:
@@ -166,7 +181,9 @@ include <{os.path.join(self.scad_templates_dir, "basic_shapes.scad")}>;
             transform = op.get('transform')
             
             # Get the module name for the model type
-            module_name = self.shape_module_map.get(model_type)
+            if model_type is None:
+                raise ValueError("Model type cannot be None")
+            module_name = self.shape_module_map.get(str(model_type))
             if not module_name:
                 raise ValueError(f"Unsupported model type: {model_type}")
             
@@ -258,3 +275,47 @@ include <{os.path.join(self.scad_templates_dir, "basic_shapes.scad")}>;
         scad_code += ");\n"
         
         return scad_code
+        
+    def _generate_ai_driven_code(self, description: str, parameters: Dict[str, Any]) -> str:
+        """
+        Generate OpenSCAD code using AI-driven techniques based on natural language description.
+        
+        Args:
+            description: Natural language description of the model
+            parameters: Dictionary of parameters for the model
+            
+        Returns:
+            Generated OpenSCAD code
+        """
+        if not self.ai_service:
+            logger.warning("AI service not available, falling back to basic shape generation")
+            # Fall back to a basic cube if AI service is not available
+            return self._generate_scad_code('parametric_cube', {'width': 10, 'height': 10, 'depth': 10})
+        
+        try:
+            # Use the AI service to generate OpenSCAD code
+            logger.info(f"Generating OpenSCAD code from description: {description}")
+            
+            # Prepare context for the AI service
+            context = {
+                "description": description,
+                "parameters": parameters,
+                "templates_dir": self.scad_templates_dir
+            }
+            
+            # Call the AI service to generate code
+            scad_code = self.ai_service.generate_openscad_code(context)
+            
+            # Ensure the code includes the basic shapes library
+            if "include <" not in scad_code:
+                scad_code = f"""// AI-generated OpenSCAD code
+include <{os.path.join(self.scad_templates_dir, "basic_shapes.scad")}>;
+
+{scad_code}
+"""
+            
+            return scad_code
+        except Exception as e:
+            logger.error(f"Error generating AI-driven code: {e}")
+            # Fall back to a basic shape if there's an error
+            return self._generate_scad_code('parametric_cube', {'width': 10, 'height': 10, 'depth': 10})
