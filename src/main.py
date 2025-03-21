@@ -564,13 +564,25 @@ def cancel_print_job(printer_id: str, job_id: str) -> Dict[str, Any]:
 
 # Add Venice.ai image generation tool
 @mcp_server.tool
-def generate_image(prompt: str, model: str = "flux") -> Dict[str, Any]:
+def generate_image(prompt: str, model: str = "fluently-xl") -> Dict[str, Any]:
     """
-    Generate an image using Venice.ai's Flux model.
+    Generate an image using Venice.ai's image generation models.
     
     Args:
         prompt: Text description for image generation
-        model: Model to use (flux, flux-dev-uncensored)
+        model: Model to use (default: fluently-xl). Options include:
+            - "fluently-xl" (fastest, 2.30s): Quick generation with good quality
+            - "flux-dev" (high quality): Detailed, premium image quality
+            - "flux-dev-uncensored": Uncensored version of flux-dev model
+            - "stable-diffusion-3.5": Standard stable diffusion model
+            - "pony-realism": Specialized for realistic outputs
+            - "lustify-sdxl": Artistic stylization model
+            
+            You can also use natural language like:
+            - "fastest model", "quick generation", "efficient"
+            - "high quality", "detailed", "premium quality"
+            - "realistic", "photorealistic"
+            - "artistic", "stylized", "creative"
         
     Returns:
         Dictionary with image information

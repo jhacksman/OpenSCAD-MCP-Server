@@ -5,13 +5,42 @@ Venice.ai API client for image generation using the Flux model.
 import os
 import requests
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List, Tuple
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+# Venice.ai model mapping and descriptions
+VENICE_MODELS = {
+    # Model name: (aliases, description)
+    "fluently-xl": (
+        ["fast", "quick", "fastest", "speed", "rapid", "efficient"],
+        "Fastest model (2.30s) with good quality"
+    ),
+    "flux-dev": (
+        ["high quality", "detailed", "hq", "best quality", "premium"],
+        "High-quality model with detailed results"
+    ),
+    "flux-dev-uncensored": (
+        ["uncensored", "unfiltered", "unrestricted"],
+        "Uncensored version of the flux-dev model"
+    ),
+    "stable-diffusion-3.5": (
+        ["stable diffusion", "sd3", "sd3.5", "standard"],
+        "Stable Diffusion 3.5 model"
+    ),
+    "pony-realism": (
+        ["realistic", "realism", "pony", "photorealistic"],
+        "Specialized model for realistic outputs"
+    ),
+    "lustify-sdxl": (
+        ["stylized", "artistic", "creative", "lustify"],
+        "Artistic stylization model"
+    ),
+}
+
 class VeniceImageGenerator:
-    """Client for Venice.ai's image generation API using the Flux model."""
+    """Client for Venice.ai's image generation API."""
     
     def __init__(self, api_key: str, output_dir: str = "output/images"):
         """
@@ -33,6 +62,35 @@ class VeniceImageGenerator:
         # Create output directory if it doesn't exist
         os.makedirs(output_dir, exist_ok=True)
     
+    def map_model_preference(self, preference: str) -> str:
+        """
+        Map a natural language preference to a Venice.ai model name.
+        
+        Args:
+            preference: Natural language description of desired model
+            
+        Returns:
+            Name of the matching Venice.ai model
+        """
+        if not preference or preference.lower() in ["default", "fluently-xl", "fluently xl"]:
+            return "fluently-xl"
+            
+        preference = preference.lower()
+        
+        # Check for exact matches first
+        for model_name in VENICE_MODELS:
+            if model_name.lower() == preference:
+                return model_name
+        
+        # Check for keyword matches
+        for model_name, (aliases, _) in VENICE_MODELS.items():
+            for alias in aliases:
+                if alias in preference:
+                    return model_name
+        
+        # Default to fluently-xl if no match found
+        return "fluently-xl"
+    
     def generate_image(self, prompt: str, model: str = "fluently-xl", 
                       width: int = 1024, height: int = 1024,
                       output_path: Optional[str] = None) -> Dict[str, Any]:
@@ -41,7 +99,14 @@ class VeniceImageGenerator:
         
         Args:
             prompt: Text description for image generation
-            model: Model to use (e.g., "fluently-xl", "flux", "flux-dev-uncensored")
+            model: Model to use - can be a specific model name or natural language description:
+                - "fluently-xl" (default): Fastest model (2.30s) with good quality
+                - "flux-dev": High-quality model with detailed results
+                - "flux-dev-uncensored": Uncensored version of the flux-dev model
+                - "stable-diffusion-3.5": Stable Diffusion 3.5 model
+                - "pony-realism": Specialized model for realistic outputs
+                - "lustify-sdxl": Artistic stylization model
+                - Or use natural language like "high quality", "fastest", "realistic", etc.
             width: Image width
             height: Image height
             output_path: Optional path to save the generated image
@@ -52,9 +117,12 @@ class VeniceImageGenerator:
         if not self.api_key:
             raise ValueError("Venice.ai API key is required")
         
-        # Prepare request payload based on user example
+        # Map the model preference to a specific model name
+        mapped_model = self.map_model_preference(model)
+        
+        # Prepare request payload
         payload = {
-            "model": model,
+            "model": mapped_model,
             "prompt": prompt,
             "height": height,
             "width": width,
@@ -89,13 +157,13 @@ class VeniceImageGenerator:
             # Process response
             result = response.json()
             
-            # Process response
-            result = response.json()
+            # Add the mapped model to the result
+            result["model"] = mapped_model
             
             # Generate output path if not provided
             if not output_path:
                 # Create a filename based on the prompt
-                filename = f"{prompt[:20].replace(' ', '_')}_{model}.png"
+                filename = f"{prompt[:20].replace(' ', '_')}_{mapped_model}.png"
                 output_path = os.path.join(self.output_dir, filename)
             
             # Save image if images array is in the result
