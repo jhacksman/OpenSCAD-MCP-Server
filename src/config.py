@@ -18,7 +18,7 @@ THREESTUDIO_PATH = os.path.join(BASE_DIR, "threestudio")
 # Venice.ai API configuration
 VENICE_API_KEY = os.getenv("VENICE_API_KEY", "")  # Set via environment variable
 VENICE_BASE_URL = "https://api.venice.ai/api/v1"
-VENICE_MODEL = "fluently-xl"  # Default model that works with the API
+VENICE_MODEL = "flux-dev"  # Default model for high-quality image generation
 
 # Create necessary directories
 for directory in [OUTPUT_DIR, IMAGES_DIR, MASKS_DIR, MODELS_DIR, SCAD_DIR]:
