@@ -61,6 +61,28 @@ printer_discovery = PrinterDiscovery()
 
 # Initialize AI components
 venice_generator = VeniceImageGenerator(VENICE_API_KEY, IMAGES_DIR)
+gemini_generator = GeminiImageGenerator(GEMINI_API_KEY, IMAGES_DIR)
+cuda_mvs = CUDAMultiViewStereo(CUDA_MVS_PATH, MODELS_DIR, use_gpu=CUDA_MVS_USE_GPU)
+image_approval = ImageApprovalTool(APPROVED_IMAGES_DIR)
+
+# Initialize remote processing components if enabled
+remote_connection_manager = None
+if REMOTE_CUDA_MVS["ENABLED"]:
+    logger.info("Initializing remote CUDA MVS connection manager")
+    remote_connection_manager = CUDAMVSConnectionManager(
+        api_key=REMOTE_CUDA_MVS["API_KEY"],
+        discovery_port=REMOTE_CUDA_MVS["DISCOVERY_PORT"],
+        use_lan_discovery=REMOTE_CUDA_MVS["USE_LAN_DISCOVERY"],
+        server_url=REMOTE_CUDA_MVS["SERVER_URL"] if REMOTE_CUDA_MVS["SERVER_URL"] else None
+    )
+
+# Initialize workflow pipeline
+multi_view_pipeline = MultiViewToModelPipeline(
+    gemini_generator=gemini_generator,
+    cuda_mvs=cuda_mvs,
+    approval_tool=image_approval,
+    output_dir=OUTPUT_DIR
+)
 
 # SAM2 segmenter will be initialized on first use to avoid loading the model unnecessarily
 sam_segmenter = None
@@ -86,6 +108,8 @@ def get_sam_segmenter():
 # Store models in memory
 models = {}
 printers = {}
+approved_images = {}
+remote_jobs = {}
 
 # Create MCP server
 mcp_server = MCPServer()
@@ -666,6 +690,631 @@ def segment_image(image_path: str, points: Optional[List[Tuple[int, int]]] = Non
     except Exception as e:
         logger.error(f"Error segmenting image: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error segmenting image: {str(e)}")
+
+
+# Add Google Gemini image generation tool
+@mcp_server.tool
+def generate_image_gemini(prompt: str, model: str = GEMINI_MODEL) -> Dict[str, Any]:
+    """
+    Generate an image using Google Gemini's image generation models.
+    
+    Args:
+        prompt: Text description for image generation
+        model: Model to use (default: gemini-2.0-flash-exp-image-generation)
+        
+    Returns:
+        Dictionary with image information
+    """
+    # Generate a unique image ID
+    image_id = str(uuid.uuid4())
+    
+    # Generate image
+    result = gemini_generator.generate_image(prompt, model)
+    
+    # Create response
+    response = {
+        "image_id": image_id,
+        "prompt": prompt,
+        "model": model,
+        "image_path": result.get("local_path"),
+        "image_url": f"/images/{os.path.basename(result.get('local_path', ''))}"
+    }
+    
+    return response
+
+
+# Add multi-view image generation tool
+@mcp_server.tool
+def generate_multi_view_images(prompt: str, num_views: int = 4) -> Dict[str, Any]:
+    """
+    Generate multiple views of the same 3D object using Google Gemini.
+    
+    Args:
+        prompt: Text description of the 3D object
+        num_views: Number of views to generate (default: 4)
+        
+    Returns:
+        Dictionary with multi-view image information
+    """
+    # Validate number of views
+    if num_views < MULTI_VIEW_PIPELINE["MIN_NUM_VIEWS"]:
+        raise ValueError(f"Number of views must be at least {MULTI_VIEW_PIPELINE['MIN_NUM_VIEWS']}")
+    
+    if num_views > MULTI_VIEW_PIPELINE["MAX_NUM_VIEWS"]:
+        raise ValueError(f"Number of views cannot exceed {MULTI_VIEW_PIPELINE['MAX_NUM_VIEWS']}")
+    
+    # Generate a unique multi-view ID
+    multi_view_id = str(uuid.uuid4())
+    
+    # Generate multi-view images
+    results = gemini_generator.generate_multiple_views(prompt, num_views)
+    
+    # Create response
+    response = {
+        "multi_view_id": multi_view_id,
+        "prompt": prompt,
+        "num_views": num_views,
+        "views": [
+            {
+                "view_id": result.get("view_id", f"view_{i+1}"),
+                "view_index": result.get("view_index", i+1),
+                "view_direction": result.get("view_direction", ""),
+                "image_path": result.get("local_path"),
+                "image_url": f"/images/{os.path.basename(result.get('local_path', ''))}"
+            }
+            for i, result in enumerate(results)
+        ],
+        "approval_required": IMAGE_APPROVAL["ENABLED"] and not IMAGE_APPROVAL["AUTO_APPROVE"]
+    }
+    
+    # Store multi-view information for approval
+    if IMAGE_APPROVAL["ENABLED"]:
+        approved_images[multi_view_id] = {
+            "multi_view_id": multi_view_id,
+            "prompt": prompt,
+            "num_views": num_views,
+            "views": response["views"],
+            "approved_views": [] if not IMAGE_APPROVAL["AUTO_APPROVE"] else [view["view_id"] for view in response["views"]],
+            "rejected_views": [],
+            "approval_complete": IMAGE_APPROVAL["AUTO_APPROVE"]
+        }
+    
+    return response
+
+
+# Add image approval tool
+@mcp_server.tool
+def approve_image(multi_view_id: str, view_id: str) -> Dict[str, Any]:
+    """
+    Approve an image for 3D model generation.
+    
+    Args:
+        multi_view_id: ID of the multi-view set
+        view_id: ID of the view to approve
+        
+    Returns:
+        Dictionary with approval information
+    """
+    # Check if multi-view ID exists
+    if multi_view_id not in approved_images:
+        raise ValueError(f"Multi-view set with ID {multi_view_id} not found")
+    
+    # Get multi-view information
+    multi_view_info = approved_images[multi_view_id]
+    
+    # Check if view ID exists
+    view_exists = False
+    for view in multi_view_info["views"]:
+        if view["view_id"] == view_id:
+            view_exists = True
+            break
+    
+    if not view_exists:
+        raise ValueError(f"View with ID {view_id} not found in multi-view set {multi_view_id}")
+    
+    # Check if view is already approved
+    if view_id in multi_view_info["approved_views"]:
+        return {
+            "multi_view_id": multi_view_id,
+            "view_id": view_id,
+            "status": "already_approved",
+            "approved_views": multi_view_info["approved_views"],
+            "rejected_views": multi_view_info["rejected_views"],
+            "approval_complete": multi_view_info["approval_complete"]
+        }
+    
+    # Remove from rejected views if present
+    if view_id in multi_view_info["rejected_views"]:
+        multi_view_info["rejected_views"].remove(view_id)
+    
+    # Add to approved views
+    multi_view_info["approved_views"].append(view_id)
+    
+    # Check if approval is complete
+    if len(multi_view_info["approved_views"]) >= IMAGE_APPROVAL["MIN_APPROVED_IMAGES"]:
+        multi_view_info["approval_complete"] = True
+    
+    # Create response
+    response = {
+        "multi_view_id": multi_view_id,
+        "view_id": view_id,
+        "status": "approved",
+        "approved_views": multi_view_info["approved_views"],
+        "rejected_views": multi_view_info["rejected_views"],
+        "approval_complete": multi_view_info["approval_complete"]
+    }
+    
+    return response
+
+
+# Add image rejection tool
+@mcp_server.tool
+def reject_image(multi_view_id: str, view_id: str) -> Dict[str, Any]:
+    """
+    Reject an image for 3D model generation.
+    
+    Args:
+        multi_view_id: ID of the multi-view set
+        view_id: ID of the view to reject
+        
+    Returns:
+        Dictionary with rejection information
+    """
+    # Check if multi-view ID exists
+    if multi_view_id not in approved_images:
+        raise ValueError(f"Multi-view set with ID {multi_view_id} not found")
+    
+    # Get multi-view information
+    multi_view_info = approved_images[multi_view_id]
+    
+    # Check if view ID exists
+    view_exists = False
+    for view in multi_view_info["views"]:
+        if view["view_id"] == view_id:
+            view_exists = True
+            break
+    
+    if not view_exists:
+        raise ValueError(f"View with ID {view_id} not found in multi-view set {multi_view_id}")
+    
+    # Check if view is already rejected
+    if view_id in multi_view_info["rejected_views"]:
+        return {
+            "multi_view_id": multi_view_id,
+            "view_id": view_id,
+            "status": "already_rejected",
+            "approved_views": multi_view_info["approved_views"],
+            "rejected_views": multi_view_info["rejected_views"],
+            "approval_complete": multi_view_info["approval_complete"]
+        }
+    
+    # Remove from approved views if present
+    if view_id in multi_view_info["approved_views"]:
+        multi_view_info["approved_views"].remove(view_id)
+    
+    # Add to rejected views
+    multi_view_info["rejected_views"].append(view_id)
+    
+    # Check if approval is complete
+    if len(multi_view_info["approved_views"]) >= IMAGE_APPROVAL["MIN_APPROVED_IMAGES"]:
+        multi_view_info["approval_complete"] = True
+    else:
+        multi_view_info["approval_complete"] = False
+    
+    # Create response
+    response = {
+        "multi_view_id": multi_view_id,
+        "view_id": view_id,
+        "status": "rejected",
+        "approved_views": multi_view_info["approved_views"],
+        "rejected_views": multi_view_info["rejected_views"],
+        "approval_complete": multi_view_info["approval_complete"]
+    }
+    
+    return response
+
+
+# Add 3D model generation from approved images tool
+@mcp_server.tool
+def create_3d_model_from_images(multi_view_id: str, output_name: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Create a 3D model from approved multi-view images.
+    
+    Args:
+        multi_view_id: ID of the multi-view set
+        output_name: Optional name for the output model
+        
+    Returns:
+        Dictionary with model information
+    """
+    # Check if multi-view ID exists
+    if multi_view_id not in approved_images:
+        raise ValueError(f"Multi-view set with ID {multi_view_id} not found")
+    
+    # Get multi-view information
+    multi_view_info = approved_images[multi_view_id]
+    
+    # Check if approval is complete
+    if not multi_view_info["approval_complete"]:
+        raise ValueError(f"Approval for multi-view set {multi_view_id} is not complete")
+    
+    # Check if there are enough approved images
+    if len(multi_view_info["approved_views"]) < IMAGE_APPROVAL["MIN_APPROVED_IMAGES"]:
+        raise ValueError(f"Not enough approved images. Need at least {IMAGE_APPROVAL['MIN_APPROVED_IMAGES']}, but only have {len(multi_view_info['approved_views'])}")
+    
+    # Get approved image paths
+    approved_image_paths = []
+    for view in multi_view_info["views"]:
+        if view["view_id"] in multi_view_info["approved_views"]:
+            approved_image_paths.append(view["image_path"])
+    
+    # Generate a unique model ID
+    model_id = str(uuid.uuid4())
+    
+    # Set output name if not provided
+    if not output_name:
+        output_name = f"model_{model_id[:8]}"
+    
+    # Create 3D model
+    if REMOTE_CUDA_MVS["ENABLED"] and remote_connection_manager:
+        # Use remote CUDA MVS processing
+        servers = discover_remote_servers()
+        
+        if not servers:
+            raise ValueError("No remote CUDA MVS servers found")
+        
+        # Use the first available server
+        server_id = servers[0]["id"]
+        
+        # Upload images
+        upload_result = upload_images_to_server(server_id, approved_image_paths)
+        
+        if not upload_result or "job_id" not in upload_result:
+            raise ValueError("Failed to upload images to remote server")
+        
+        job_id = upload_result["job_id"]
+        
+        # Process images
+        process_result = process_images_remotely(
+            server_id,
+            job_id,
+            {
+                "quality": REMOTE_CUDA_MVS["DEFAULT_RECONSTRUCTION_QUALITY"],
+                "output_format": REMOTE_CUDA_MVS["DEFAULT_OUTPUT_FORMAT"]
+            }
+        )
+        
+        if not process_result:
+            raise ValueError(f"Failed to process images for job {job_id}")
+        
+        # Wait for completion if requested
+        if REMOTE_CUDA_MVS["WAIT_FOR_COMPLETION"]:
+            import time
+            
+            while True:
+                status = get_job_status(job_id)
+                
+                if not status:
+                    raise ValueError(f"Failed to get status for job {job_id}")
+                
+                if status["status"] in ["completed", "failed", "cancelled"]:
+                    break
+                
+                time.sleep(REMOTE_CUDA_MVS["POLL_INTERVAL"])
+            
+            if status["status"] == "completed":
+                # Download model
+                download_result = download_remote_model(job_id)
+                
+                if not download_result:
+                    raise ValueError(f"Failed to download model for job {job_id}")
+                
+                # Store model information
+                models[model_id] = {
+                    "id": model_id,
+                    "type": "cuda_mvs_remote",
+                    "parameters": {
+                        "multi_view_id": multi_view_id,
+                        "prompt": multi_view_info["prompt"],
+                        "num_views": len(approved_image_paths),
+                        "quality": REMOTE_CUDA_MVS["DEFAULT_RECONSTRUCTION_QUALITY"],
+                        "output_format": REMOTE_CUDA_MVS["DEFAULT_OUTPUT_FORMAT"]
+                    },
+                    "description": f"3D model generated from {len(approved_image_paths)} views of '{multi_view_info['prompt']}'",
+                    "model_file": download_result.get("model_path"),
+                    "point_cloud_file": download_result.get("point_cloud_path"),
+                    "previews": {},  # Will be generated later
+                    "format": REMOTE_CUDA_MVS["DEFAULT_OUTPUT_FORMAT"],
+                    "remote_job_id": job_id
+                }
+                
+                # Create response
+                response = {
+                    "model_id": model_id,
+                    "multi_view_id": multi_view_id,
+                    "status": "completed",
+                    "model_path": download_result.get("model_path"),
+                    "point_cloud_path": download_result.get("point_cloud_path"),
+                    "format": REMOTE_CUDA_MVS["DEFAULT_OUTPUT_FORMAT"]
+                }
+            else:
+                # Store job information
+                remote_jobs[job_id] = {
+                    "model_id": model_id,
+                    "multi_view_id": multi_view_id,
+                    "server_id": server_id,
+                    "job_id": job_id,
+                    "status": status["status"],
+                    "message": status.get("message", "")
+                }
+                
+                # Create response
+                response = {
+                    "model_id": model_id,
+                    "multi_view_id": multi_view_id,
+                    "status": status["status"],
+                    "message": status.get("message", ""),
+                    "job_id": job_id
+                }
+        else:
+            # Store job information
+            remote_jobs[job_id] = {
+                "model_id": model_id,
+                "multi_view_id": multi_view_id,
+                "server_id": server_id,
+                "job_id": job_id,
+                "status": "processing"
+            }
+            
+            # Create response
+            response = {
+                "model_id": model_id,
+                "multi_view_id": multi_view_id,
+                "status": "processing",
+                "job_id": job_id,
+                "server_id": server_id
+            }
+    else:
+        # Use local CUDA MVS processing
+        result = cuda_mvs.process_images(
+            approved_image_paths,
+            output_name=output_name,
+            quality=REMOTE_CUDA_MVS["DEFAULT_RECONSTRUCTION_QUALITY"],
+            output_format=REMOTE_CUDA_MVS["DEFAULT_OUTPUT_FORMAT"]
+        )
+        
+        # Store model information
+        models[model_id] = {
+            "id": model_id,
+            "type": "cuda_mvs_local",
+            "parameters": {
+                "multi_view_id": multi_view_id,
+                "prompt": multi_view_info["prompt"],
+                "num_views": len(approved_image_paths),
+                "quality": REMOTE_CUDA_MVS["DEFAULT_RECONSTRUCTION_QUALITY"],
+                "output_format": REMOTE_CUDA_MVS["DEFAULT_OUTPUT_FORMAT"]
+            },
+            "description": f"3D model generated from {len(approved_image_paths)} views of '{multi_view_info['prompt']}'",
+            "model_file": result.get("model_path"),
+            "point_cloud_file": result.get("point_cloud_path"),
+            "previews": {},  # Will be generated later
+            "format": REMOTE_CUDA_MVS["DEFAULT_OUTPUT_FORMAT"]
+        }
+        
+        # Create response
+        response = {
+            "model_id": model_id,
+            "multi_view_id": multi_view_id,
+            "status": "completed",
+            "model_path": result.get("model_path"),
+            "point_cloud_path": result.get("point_cloud_path"),
+            "format": REMOTE_CUDA_MVS["DEFAULT_OUTPUT_FORMAT"]
+        }
+    
+    return response
+
+
+# Add complete pipeline tool (text to 3D model)
+@mcp_server.tool
+def create_3d_model_from_text(prompt: str, num_views: int = 4, wait_for_completion: bool = True) -> Dict[str, Any]:
+    """
+    Create a 3D model from a text description using the complete pipeline.
+    
+    Args:
+        prompt: Text description of the 3D object
+        num_views: Number of views to generate (default: 4)
+        wait_for_completion: Whether to wait for remote processing to complete
+        
+    Returns:
+        Dictionary with model information
+    """
+    # Generate multi-view images
+    multi_view_result = generate_multi_view_images(prompt, num_views)
+    
+    multi_view_id = multi_view_result["multi_view_id"]
+    
+    # Auto-approve all images if enabled
+    if IMAGE_APPROVAL["AUTO_APPROVE"]:
+        for view in multi_view_result["views"]:
+            approve_image(multi_view_id, view["view_id"])
+    else:
+        # Return multi-view result for manual approval
+        return {
+            "status": "awaiting_approval",
+            "message": "Please approve or reject each image before proceeding",
+            "multi_view_id": multi_view_id,
+            "views": multi_view_result["views"]
+        }
+    
+    # Create 3D model from approved images
+    model_result = create_3d_model_from_images(multi_view_id)
+    
+    # If remote processing is not waiting for completion, return job information
+    if not wait_for_completion and model_result.get("status") == "processing":
+        return model_result
+    
+    # Return model information
+    return model_result
+
+
+# Add remote CUDA MVS server discovery tool
+@mcp_server.tool
+def discover_remote_cuda_mvs_servers() -> Dict[str, Any]:
+    """
+    Discover remote CUDA MVS servers on the network.
+    
+    Returns:
+        Dictionary with discovered servers
+    """
+    if not REMOTE_CUDA_MVS["ENABLED"]:
+        raise ValueError("Remote CUDA MVS processing is not enabled")
+    
+    if not remote_connection_manager:
+        raise ValueError("Remote CUDA MVS connection manager is not initialized")
+    
+    servers = discover_remote_servers()
+    
+    return {
+        "servers": servers,
+        "count": len(servers)
+    }
+
+
+# Add remote job status tool
+@mcp_server.tool
+def get_remote_job_status(job_id: str) -> Dict[str, Any]:
+    """
+    Get the status of a remote CUDA MVS processing job.
+    
+    Args:
+        job_id: ID of the job to get status for
+        
+    Returns:
+        Dictionary with job status
+    """
+    if not REMOTE_CUDA_MVS["ENABLED"]:
+        raise ValueError("Remote CUDA MVS processing is not enabled")
+    
+    if not remote_connection_manager:
+        raise ValueError("Remote CUDA MVS connection manager is not initialized")
+    
+    # Check if job exists
+    if job_id not in remote_jobs:
+        raise ValueError(f"Job with ID {job_id} not found")
+    
+    # Get job information
+    job_info = remote_jobs[job_id]
+    
+    # Get status from server
+    status = get_job_status(job_id)
+    
+    if not status:
+        raise ValueError(f"Failed to get status for job with ID {job_id}")
+    
+    # Update job information
+    job_info["status"] = status.get("status", job_info["status"])
+    job_info["progress"] = status.get("progress", 0)
+    job_info["message"] = status.get("message", "")
+    
+    return job_info
+
+
+# Add remote model download tool
+@mcp_server.tool
+def download_remote_model_result(job_id: str) -> Dict[str, Any]:
+    """
+    Download a processed model from a remote CUDA MVS server.
+    
+    Args:
+        job_id: ID of the job to download model for
+        
+    Returns:
+        Dictionary with model information
+    """
+    if not REMOTE_CUDA_MVS["ENABLED"]:
+        raise ValueError("Remote CUDA MVS processing is not enabled")
+    
+    if not remote_connection_manager:
+        raise ValueError("Remote CUDA MVS connection manager is not initialized")
+    
+    # Check if job exists
+    if job_id not in remote_jobs:
+        raise ValueError(f"Job with ID {job_id} not found")
+    
+    # Get job information
+    job_info = remote_jobs[job_id]
+    
+    # Check if job is completed
+    if job_info["status"] != "completed":
+        raise ValueError(f"Job with ID {job_id} is not completed (status: {job_info['status']})")
+    
+    # Download model
+    result = download_remote_model(job_id)
+    
+    if not result:
+        raise ValueError(f"Failed to download model for job with ID {job_id}")
+    
+    # Update job information
+    job_info["model_path"] = result.get("model_path")
+    job_info["point_cloud_path"] = result.get("point_cloud_path")
+    job_info["downloaded"] = True
+    
+    # Update model information if available
+    if "model_id" in job_info and job_info["model_id"] in models:
+        model_id = job_info["model_id"]
+        models[model_id]["model_file"] = result.get("model_path")
+        models[model_id]["point_cloud_file"] = result.get("point_cloud_path")
+    
+    return {
+        "job_id": job_id,
+        "model_path": result.get("model_path"),
+        "point_cloud_path": result.get("point_cloud_path"),
+        "format": REMOTE_CUDA_MVS["DEFAULT_OUTPUT_FORMAT"]
+    }
+
+
+# Add remote job cancellation tool
+@mcp_server.tool
+def cancel_remote_job(job_id: str) -> Dict[str, Any]:
+    """
+    Cancel a remote CUDA MVS processing job.
+    
+    Args:
+        job_id: ID of the job to cancel
+        
+    Returns:
+        Dictionary with cancellation result
+    """
+    if not REMOTE_CUDA_MVS["ENABLED"]:
+        raise ValueError("Remote CUDA MVS processing is not enabled")
+    
+    if not remote_connection_manager:
+        raise ValueError("Remote CUDA MVS connection manager is not initialized")
+    
+    # Check if job exists
+    if job_id not in remote_jobs:
+        raise ValueError(f"Job with ID {job_id} not found")
+    
+    # Get job information
+    job_info = remote_jobs[job_id]
+    
+    # Cancel job
+    result = cancel_job(job_id)
+    
+    if not result:
+        raise ValueError(f"Failed to cancel job with ID {job_id}")
+    
+    # Update job information
+    if result.get("cancelled", False):
+        job_info["status"] = "cancelled"
+        job_info["message"] = "Job cancelled by user"
+    
+    return {
+        "job_id": job_id,
+        "cancelled": result.get("cancelled", False),
+        "status": job_info["status"],
+        "message": job_info.get("message", "")
+    }
 
 
 # FastAPI routes
