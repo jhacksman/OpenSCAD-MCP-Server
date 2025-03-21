@@ -18,6 +18,21 @@ python-dotenv>=1.0.0
 pyyaml>=6.0
 jinja2>=3.1.2
 
+# Image Generation - Venice.ai API
+# (using existing requests and python-dotenv)
+
+# Object Segmentation - SAM2
+torch>=2.0.0
+torchvision>=0.15.0
+opencv-python>=4.7.0
+segment-anything>=1.0
+
+# 3D Model Creation - threestudio
+ninja>=1.11.0
+pytorch3d>=0.7.4
+trimesh>=3.21.0
+numpy>=1.24.0
+
 # For development
 pytest>=7.3.1
 black>=23.3.0
