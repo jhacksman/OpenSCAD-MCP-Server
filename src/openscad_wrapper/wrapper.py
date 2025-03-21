@@ -67,6 +67,26 @@ class OpenSCADWrapper:
         
         logger.info(f"Generated SCAD file: {scad_file}")
         return scad_file
+        
+    def generate_scad(self, scad_code: str, model_id: str) -> str:
+        """
+        Save OpenSCAD code to a file with a specific model ID.
+        
+        Args:
+            scad_code: OpenSCAD code to save
+            model_id: ID to use for the file name
+            
+        Returns:
+            Path to the saved SCAD file
+        """
+        scad_file = os.path.join(self.scad_dir, f"{model_id}.scad")
+        
+        # Write SCAD code to file
+        with open(scad_file, 'w') as f:
+            f.write(scad_code)
+        
+        logger.info(f"Generated SCAD file: {scad_file}")
+        return scad_file
     
     def update_scad_code(self, model_id: str, parameters: Dict[str, Any]) -> str:
         """
@@ -202,6 +222,55 @@ class OpenSCADWrapper:
             logger.error(f"Error creating placeholder image: {str(e)}")
             # If all else fails, return the path anyway
             return output_path
+            
+    def generate_multi_angle_previews(self, scad_file: str, parameters: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
+        """
+        Generate preview images from multiple angles for a SCAD file.
+        
+        Args:
+            scad_file: Path to the SCAD file
+            parameters: Optional parameters to override in the SCAD file
+            
+        Returns:
+            Dictionary mapping view names to preview image paths
+        """
+        # Define camera positions for different views
+        camera_positions = {
+            "front": "0,0,0,0,0,0,50",
+            "top": "0,0,0,90,0,0,50",
+            "right": "0,0,0,0,90,0,50",
+            "perspective": "40,30,30,55,0,25,100"
+        }
+        
+        # Generate preview for each view
+        previews = {}
+        for view, camera_position in camera_positions.items():
+            try:
+                model_id = os.path.basename(scad_file).split('.')[0]
+                preview_file = os.path.join(self.preview_dir, f"{model_id}_{view}.png")
+                
+                # Build command
+                cmd = ["openscad", "--camera", camera_position, "--imgsize", "800,600", "-o", preview_file]
+                
+                # Add parameters if provided
+                if parameters:
+                    for key, value in parameters.items():
+                        cmd.extend(["-D", f"{key}={value}"])
+                
+                # Add input file
+                cmd.append(scad_file)
+                
+                # Run OpenSCAD
+                result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+                logger.info(f"Generated {view} preview: {preview_file}")
+                previews[view] = preview_file
+            except subprocess.CalledProcessError as e:
+                logger.error(f"Error generating {view} preview: {e.stderr}")
+                # Create a placeholder image for this view
+                preview_file = os.path.join(self.preview_dir, f"{model_id}_{view}.png")
+                previews[view] = self._create_placeholder_image(preview_file)
+        
+        return previews
     
     # Template functions for basic shapes
     

@@ -17,7 +17,7 @@ class PrinterDiscovery:
         """Initialize the printer discovery service."""
         self.printers = {}  # Dictionary of discovered printers
         self.discovery_thread = None
-        self.stop_discovery = threading.Event()
+        self.discovery_stop_event = threading.Event()
         self.discovery_callback = None
     
     def start_discovery(self, callback: Optional[Callable[[Dict[str, Any]], None]] = None) -> None:
@@ -32,7 +32,7 @@ class PrinterDiscovery:
             return
         
         self.discovery_callback = callback
-        self.stop_discovery.clear()
+        self.discovery_stop_event.clear()
         self.discovery_thread = threading.Thread(target=self._discover_printers)
         self.discovery_thread.daemon = True
         self.discovery_thread.start()
@@ -42,7 +42,7 @@ class PrinterDiscovery:
     def stop_discovery(self) -> None:
         """Stop discovering 3D printers."""
         if self.discovery_thread and self.discovery_thread.is_alive():
-            self.stop_discovery.set()
+            self.discovery_stop_event.set()
             self.discovery_thread.join(timeout=2.0)
             logger.info("Stopped printer discovery")
         else:
@@ -63,7 +63,7 @@ class PrinterDiscovery:
         # In a real implementation, you would use protocols like mDNS, SNMP, or OctoPrint API
         
         # Simulate discovering printers
-        while not self.stop_discovery.is_set():
+        while not self.discovery_stop_event.is_set():
             try:
                 # Simulate network discovery
                 self._discover_octoprint_printers()

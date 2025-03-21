@@ -5,7 +5,7 @@ from typing import Dict, Any, List, Tuple, Optional
 
 logger = logging.getLogger(__name__)
 
-class OpenSCADCodeGenerator:
+class CodeGenerator:
     """
     Generates OpenSCAD code from natural language descriptions and parameters.
     Implements translation of requirements to OpenSCAD primitives and modules.
