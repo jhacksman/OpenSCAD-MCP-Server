@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/mseep-audited.png)](https://mseep.ai/app/jhacksman-openscad-mcp-server)
+
 # OpenSCAD MCP Server
 
 A local MCP server that turns OpenSCAD source or explicit primitive dimensions into editable SCAD, STL geometry, and four PNG previews. The connected assistant can write SCAD for complex designs; this server compiles and renders it with the installed OpenSCAD executable.
