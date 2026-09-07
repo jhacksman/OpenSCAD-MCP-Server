@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "openscad-mcp-server"
+version = "0.2.0"
+description = "Local MCP tools for generating, rendering, and exporting OpenSCAD models"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["mcp>=1.12,<2", "fastapi>=0.115,<1", "uvicorn>=0.30,<1"]
+
+[project.scripts]
+openscad-mcp = "openscad_mcp.server:main"
+
+[dependency-groups]
+dev = ["pytest>=8,<10", "pytest-asyncio>=1,<2", "trimesh>=4,<5", "pillow>=11,<13", "ruff>=0.12,<1"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/openscad_mcp"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = ["integration: requires the real OpenSCAD executable"]
+
+[tool.ruff]
+include = ["src/openscad_mcp/**/*.py", "tests/**/*.py"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]

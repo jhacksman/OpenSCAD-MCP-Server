@@ -1,0 +1,21 @@
+name: Test
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.12'
+      - name: Install OpenSCAD and headless display
+        run: sudo apt-get update && sudo apt-get install -y openscad xvfb
+      - run: uv sync --locked --group dev
+      - run: uv run ruff check src/openscad_mcp tests
+      - run: uv run ruff format --check src/openscad_mcp tests
+      - name: Test real geometry and both MCP transports
+        run: xvfb-run -a uv run pytest -q
