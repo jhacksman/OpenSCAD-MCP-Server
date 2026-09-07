@@ -33,6 +33,12 @@ export UV_PROJECT_ENVIRONMENT="$HOME/.cache/openscad-mcp-venv"
 uv sync --locked
 ```
 
+## Docker and Jetson
+
+A headless stdio image is available through the root `Dockerfile`. See [Docker setup and verification](docs/docker.md) for build commands, MCP client configuration, persistent model storage, and Glama listing requirements. The image needs no GPU.
+
+For the hardware question in issue #19, see [Jetson Orin Nano and CUDA](docs/jetson.md). The supported server does not use CUDA; the archived reconstruction prototype is not restored by this Docker support.
+
 ## Connect an MCP client
 
 Stdio is the default. Configure the client to launch the server process, using absolute paths:
@@ -121,9 +127,13 @@ Open the returned `preview_url` on the same server. Download `/download/MODEL_ID
 
 ```sh
 uv sync --locked --group dev
-uv run ruff check src/openscad_mcp tests
-uv run ruff format --check src/openscad_mcp tests
+uv run ruff check src/openscad_mcp tests scripts
+uv run ruff format --check src/openscad_mcp tests scripts
 uv run pytest -q
 ```
 
 The full suite requires OpenSCAD and fails if it is unavailable. Tests launch real stdio and HTTP server processes, use the official MCP client, download exports, decode PNGs, inspect mesh topology/dimensions/volume, test persistence and failed edits, and exercise invalid requests. `uv run pytest -m 'not integration'` runs the unit checks only and does not establish end-to-end correctness.
+
+## License
+
+[MIT](LICENSE), copyright 2026 Jack Hacksman.

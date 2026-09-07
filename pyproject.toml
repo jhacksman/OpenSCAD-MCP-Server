@@ -7,6 +7,8 @@ name = "openscad-mcp-server"
 version = "0.2.0"
 description = "Local MCP tools for generating, rendering, and exporting OpenSCAD models"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = ["mcp>=1.12,<2", "fastapi>=0.115,<1", "uvicorn>=0.30,<1"]
 
@@ -25,7 +27,7 @@ asyncio_mode = "auto"
 markers = ["integration: requires the real OpenSCAD executable"]
 
 [tool.ruff]
-include = ["src/openscad_mcp/**/*.py", "tests/**/*.py"]
+include = ["src/openscad_mcp/**/*.py", "tests/**/*.py", "scripts/**/*.py"]
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "I"]
