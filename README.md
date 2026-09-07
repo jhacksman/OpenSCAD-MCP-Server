@@ -115,7 +115,7 @@ Open the returned `preview_url` on the same server. Download `/download/MODEL_ID
 - Default storage is `~/.local/share/openscad-mcp/models`. Override with `--output-dir` or `OPENSCAD_OUTPUT_DIR`. Each render subprocess has a 120-second timeout, configurable with `--timeout`. A model requires five subprocesses, so the total request can take longer.
 - Run one server process per output directory. Renders and edits are serialized. There is no automatic disk cleanup, distributed job queue, or multi-process store coordination.
 - This is a trusted local tool. Custom SCAD executes with the current user's file access, including OpenSCAD `import`, `include`, and `use`; it is not sandboxed. HTTP binds to loopback and rejects non-local Host/Origin headers. There is no authentication or supported public/LAN deployment.
-- The tested native platform is macOS arm64. Other platforms are not certified by this machine's results. No hardware printer or remote GPU was exercised.
+- Tested locally on macOS arm64 and in Ubuntu 24.04 CI under Xvfb. Windows and other platform/display combinations are unverified. No hardware printer or remote GPU was exercised.
 
 ## Development and verification
 
