@@ -71,6 +71,7 @@ The MCP endpoint is **`http://127.0.0.1:8000/mcp`**. `/` is server information; 
 | `create_model_from_scad` | Compile trusted `scad_code` for a custom 3D model |
 | `modify_3d_model` | Change primitive parameters or replace a model's `scad_code` |
 | `get_model` | Read a saved model and its artifact paths |
+| `get_model_source` | Read saved SCAD source and its revision, including inside Docker |
 | `get_model_preview` | Return a PNG image as MCP image content |
 | `export_model` | Export `scad`, `stl`, `csg`, or `3mf` |
 
@@ -99,6 +100,20 @@ To modify a primitive:
 ```json
 {"model_id": "ID_FROM_CREATION", "parameters": {"height": 25}}
 ```
+
+For custom models, call `get_model_source` with the model ID to retrieve `scad_code` and `revision` directly through MCP. Edit the returned source, then call `modify_3d_model` with the new `scad_code` and `expected_revision` set to the revision you read. No access to the server's filesystem is needed to read the source.
+
+The same optional revision check works for primitive parameter edits:
+
+```json
+{
+  "model_id": "ID_FROM_CREATION",
+  "parameters": {"height": 25},
+  "expected_revision": "REVISION_FROM_GET_MODEL"
+}
+```
+
+If another edit has already committed, the operation fails before rendering or changing files. MCP reports a tool error; the HTTP `/tool_call` API returns **409** with `current_revision`. Read the latest source/parameters and incorporate the intervening changes before retrying. Omitting `expected_revision` preserves the original unconditional edit behavior.
 
 Only **SCAD** retains editable source parameters. CSG is an evaluated geometry tree. STL and 3MF are meshes; they do not preserve the design's parametric relationships. AMF (removed in current OpenSCAD builds), STEP, OBJ, 2D exports, image reconstruction, and printing are not offered.
 

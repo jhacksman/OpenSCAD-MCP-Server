@@ -112,3 +112,61 @@ def test_custom_geometry(service):
 def test_unknown_ids(service, model_id):
     with pytest.raises(ModelNotFound):
         service.get(model_id)
+    with pytest.raises(ModelNotFound):
+        service.source(model_id)
+
+
+def test_source_round_trip_and_stale_edits(service):
+    from openscad_mcp.service import ModelConflict
+
+    original = "// café — dimensions\nsize = 4;\ncube(size);\n"
+    model = service.from_scad(original)
+    source = service.source(model["model_id"])
+    assert source["scad_code"] == original
+    assert source["revision"] == model["revision"]
+    edited = service.modify(
+        model["model_id"],
+        scad_code=original.replace("size = 4", "size = 6"),
+        expected_revision=source["revision"],
+    )
+    assert trimesh.load_mesh(edited["model_file"]).volume == pytest.approx(216)
+    with pytest.raises(ModelConflict) as caught:
+        service.modify(
+            model["model_id"],
+            scad_code="cube(10);",
+            expected_revision=source["revision"],
+        )
+    assert caught.value.current_revision == edited["revision"]
+    assert service.source(model["model_id"])["scad_code"] == original.replace(
+        "size = 4", "size = 6"
+    )
+    # Exactly two successful revisions; rejection created no files.
+    assert len(list((service.root / model["model_id"]).iterdir())) == 3
+
+
+def test_concurrent_edits_cannot_both_commit_same_revision(service):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from openscad_mcp.service import ModelConflict
+
+    model = service.create(model_type="cube")
+
+    def edit(height):
+        try:
+            return service.modify(
+                model["model_id"],
+                parameters={"height": height},
+                expected_revision=model["revision"],
+            )
+        except ModelConflict:
+            return None
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(edit, [12, 15]))
+    winners = [result for result in results if result is not None]
+    assert len(winners) == 1
+    assert service.get(model["model_id"]) == winners[0]
+    assert (
+        service.source(model["model_id"])["parameters"]["height"]
+        == winners[0]["parameters"]["height"]
+    )

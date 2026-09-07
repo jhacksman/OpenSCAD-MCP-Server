@@ -65,7 +65,7 @@ async def check(image):
     docker("volume", "create", volume)
     try:
         async with session_for(image, volume) as (session, name):
-            assert len((await session.list_tools()).tools) == 7
+            assert len((await session.list_tools()).tools) == 8
             capabilities = data(await session.call_tool("get_capabilities", {}))
             model = data(
                 await session.call_tool(
@@ -113,13 +113,30 @@ async def check(image):
                     elif format == "3mf":
                         with zipfile.ZipFile(local) as archive:
                             assert any(p.endswith(".model") for p in archive.namelist())
+                source = data(
+                    await session.call_tool("get_model_source", {"model_id": model_id})
+                )
+                assert "width = 40;" in source["scad_code"]
                 modified = data(
                     await session.call_tool(
                         "modify_3d_model",
-                        {"model_id": model_id, "parameters": {"height": 25}},
+                        {
+                            "model_id": model_id,
+                            "parameters": {"height": 25},
+                            "expected_revision": source["revision"],
+                        },
                     )
                 )
                 assert modified["parameters"]["height"] == 25
+                stale = await session.call_tool(
+                    "modify_3d_model",
+                    {
+                        "model_id": model_id,
+                        "parameters": {"height": 50},
+                        "expected_revision": source["revision"],
+                    },
+                )
+                assert stale.isError
                 failed = await session.call_tool(
                     "modify_3d_model",
                     {"model_id": model_id, "scad_code": "invalid SCAD !!!"},
@@ -131,6 +148,34 @@ async def check(image):
                     ]
                     == modified["revision"]
                 )
+            custom = data(
+                await session.call_tool(
+                    "create_model_from_scad",
+                    {"scad_code": "// café\nsize=4; cube(size);"},
+                )
+            )
+            custom_source = data(
+                await session.call_tool(
+                    "get_model_source", {"model_id": custom["model_id"]}
+                )
+            )
+            assert custom_source["scad_code"] == "// café\nsize=4; cube(size);"
+            edited_custom = data(
+                await session.call_tool(
+                    "modify_3d_model",
+                    {
+                        "model_id": custom["model_id"],
+                        "scad_code": custom_source["scad_code"].replace(
+                            "size=4", "size=6"
+                        ),
+                        "expected_revision": custom_source["revision"],
+                    },
+                )
+            )
+            with tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary) / "custom.stl"
+                docker("cp", f"{name}:{edited_custom['model_file']}", str(path))
+                assert abs(trimesh.load_mesh(path).volume - 216) < 0.01
         # A fresh container reuses the named volume and recovers the successful edit.
         async with session_for(image, volume) as (session, name):
             restored = data(
@@ -156,6 +201,8 @@ async def check(image):
                         "four PNG views",
                         "four exports",
                         "edit",
+                        "SCAD source round trip",
+                        "stale-edit rejection",
                         "failed-edit rollback",
                         "container restart persistence",
                     ],

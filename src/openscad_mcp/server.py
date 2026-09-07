@@ -18,7 +18,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from . import __version__
 from .engine import OpenSCAD, OpenSCADError
 from .geometry import DEFAULTS
-from .service import ModelNotFound, ModelService
+from .service import ModelConflict, ModelNotFound, ModelService
 
 
 def create_server(service: ModelService) -> tuple[FastMCP, FastAPI]:
@@ -48,10 +48,16 @@ def create_server(service: ModelService) -> tuple[FastMCP, FastAPI]:
         modifications: str = "",
         parameters: dict | None = None,
         scad_code: str | None = None,
+        expected_revision: str | None = None,
     ) -> dict:
-        """Edit primitive dimensions or replace source using scad_code. Failed edits leave the previous revision intact."""
+        """Edit primitive dimensions or replace source using scad_code. Pass expected_revision from get_model/get_model_source to reject stale edits. Failed edits leave the previous revision intact."""
         return await asyncio.to_thread(
-            service.modify, model_id, modifications, parameters, scad_code
+            service.modify,
+            model_id,
+            modifications,
+            parameters,
+            scad_code,
+            expected_revision,
         )
 
     async def export_model(model_id: str, format: str = "stl") -> dict:
@@ -61,6 +67,10 @@ def create_server(service: ModelService) -> tuple[FastMCP, FastAPI]:
     async def get_model(model_id: str) -> dict:
         """Read a persisted model's parameters and local artifact paths."""
         return await asyncio.to_thread(service.get, model_id)
+
+    async def get_model_source(model_id: str) -> dict:
+        """Read the saved UTF-8 SCAD source and revision over MCP, including inside Docker. Edit scad_code and pass its revision as expected_revision to modify_3d_model."""
+        return await asyncio.to_thread(service.source, model_id)
 
     async def get_model_preview(model_id: str, view: str = "perspective") -> Image:
         """Return an actual PNG image to the MCP client. Views: perspective, front, top, right."""
@@ -84,6 +94,7 @@ def create_server(service: ModelService) -> tuple[FastMCP, FastAPI]:
         modify_3d_model,
         export_model,
         get_model,
+        get_model_source,
         get_capabilities,
     ]
     rest_tools = {}
@@ -128,6 +139,13 @@ def create_server(service: ModelService) -> tuple[FastMCP, FastAPI]:
     @app.exception_handler(ModelNotFound)
     async def missing(request, exc):
         return JSONResponse({"detail": str(exc)}, status_code=404)
+
+    @app.exception_handler(ModelConflict)
+    async def conflict(request, exc):
+        return JSONResponse(
+            {"detail": str(exc), "current_revision": exc.current_revision},
+            status_code=409,
+        )
 
     @app.exception_handler(ValueError)
     async def invalid(request, exc):

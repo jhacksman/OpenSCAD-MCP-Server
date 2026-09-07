@@ -17,6 +17,14 @@ class ModelNotFound(ValueError):
     pass
 
 
+class ModelConflict(ValueError):
+    def __init__(self, current_revision: str):
+        self.current_revision = current_revision
+        super().__init__(
+            "Model changed since it was read. Read the current source/parameters before retrying the edit."
+        )
+
+
 class ModelService:
     def __init__(self, output_dir: str | Path, engine: OpenSCAD | None = None):
         self.root = Path(output_dir).expanduser().resolve()
@@ -117,9 +125,12 @@ class ModelService:
         modifications: str = "",
         parameters: dict | None = None,
         scad_code: str | None = None,
+        expected_revision: str | None = None,
     ) -> dict:
         with self.lock:
             data = self._load(model_id)
+            if expected_revision is not None and expected_revision != data["revision"]:
+                raise ModelConflict(data["revision"])
             if scad_code is not None:
                 if modifications or parameters:
                     raise ValueError("Supply scad_code alone when replacing source")
@@ -144,6 +155,17 @@ class ModelService:
 
     def get(self, model_id: str) -> dict:
         return self._public(self._load(model_id))
+
+    def source(self, model_id: str) -> dict:
+        data = self._load(model_id)
+        path = self._directory(model_id) / data["revision"] / "model.scad"
+        return {
+            "model_id": model_id,
+            "revision": data["revision"],
+            "model_type": data["model_type"],
+            "parameters": data["parameters"],
+            "scad_code": path.read_text(encoding="utf-8"),
+        }
 
     def export(self, model_id: str, format: str = "stl") -> dict:
         if format not in FORMATS:
