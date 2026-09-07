@@ -7,15 +7,34 @@ permissions:
 jobs:
   linux:
     runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        python: ["3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
         with:
-          python-version: '3.12'
+          python-version: ${{ matrix.python }}
       - name: Install OpenSCAD and headless display
         run: sudo apt-get update && sudo apt-get install -y openscad xvfb
       - run: uv sync --locked --group dev
-      - run: uv run ruff check src/openscad_mcp tests
-      - run: uv run ruff format --check src/openscad_mcp tests
+      - run: uv run ruff check src/openscad_mcp tests scripts
+      - run: uv run ruff format --check src/openscad_mcp tests scripts
       - name: Test real geometry and both MCP transports
         run: xvfb-run -a uv run pytest -q
+
+  docker:
+    strategy:
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.13'
+      - run: uv sync --locked --group dev
+      - name: Build headless image
+        run: docker build --tag openscad-mcp:ci .
+      - name: Test real container MCP and rendering without network or GPU
+        run: uv run python scripts/test_docker.py --image openscad-mcp:ci

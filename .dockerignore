@@ -1,0 +1,9 @@
+**
+!Dockerfile
+!pyproject.toml
+!uv.lock
+!README.md
+!LICENSE
+!src/
+!src/openscad_mcp/
+!src/openscad_mcp/*.py
