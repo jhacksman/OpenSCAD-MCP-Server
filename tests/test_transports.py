@@ -91,6 +91,7 @@ async def test_stdio_end_to_end(tmp_path):
                 "create_model_from_scad",
                 "modify_3d_model",
                 "get_model",
+                "get_model_source",
                 "get_model_preview",
                 "get_capabilities",
                 "export_model",
@@ -122,15 +123,34 @@ async def test_stdio_end_to_end(tmp_path):
             image = next(block for block in preview.content if block.type == "image")
             with Image.open(io.BytesIO(base64.b64decode(image.data))) as png:
                 assert png.size == (800, 600)
+            source = tool_data(
+                await session.call_tool("get_model_source", {"model_id": model_id})
+            )
+            assert source["scad_code"] == Path(model["scad_file"]).read_text()
+            assert source["revision"] == model["revision"]
             modified = tool_data(
                 await session.call_tool(
                     "modify_3d_model",
-                    {"model_id": model_id, "parameters": {"height": 18}},
+                    {
+                        "model_id": model_id,
+                        "parameters": {"height": 18},
+                        "expected_revision": source["revision"],
+                    },
                 )
             )
             assert trimesh.load_mesh(modified["model_file"]).volume == pytest.approx(
                 3240
             )
+            stale = await session.call_tool(
+                "modify_3d_model",
+                {
+                    "model_id": model_id,
+                    "parameters": {"height": 99},
+                    "expected_revision": source["revision"],
+                },
+            )
+            assert stale.isError
+            assert "Model changed" in stale.content[0].text
             exported = tool_data(
                 await session.call_tool(
                     "export_model", {"model_id": model_id, "format": "3mf"}
@@ -153,6 +173,11 @@ async def test_stdio_end_to_end(tmp_path):
                 await session.call_tool("get_model", {"model_id": model_id})
             )
             assert persisted["parameters"]["height"] == 18
+            saved_source = tool_data(
+                await session.call_tool("get_model_source", {"model_id": model_id})
+            )
+            assert saved_source["revision"] == persisted["revision"]
+            assert "height = 18;" in saved_source["scad_code"]
 
 
 async def test_http_mcp_and_downloads(tmp_path):
@@ -161,7 +186,7 @@ async def test_http_mcp_and_downloads(tmp_path):
         async with streamable_http_client(base + "/mcp") as (read, write, _):
             async with ClientSession(read, write) as session:
                 await session.initialize()
-                assert len((await session.list_tools()).tools) == 7
+                assert len((await session.list_tools()).tools) == 8
                 model = tool_data(
                     await session.call_tool(
                         "create_model_from_scad",
@@ -171,6 +196,46 @@ async def test_http_mcp_and_downloads(tmp_path):
                         },
                     )
                 )
+                source = tool_data(
+                    await session.call_tool(
+                        "get_model_source", {"model_id": model["model_id"]}
+                    )
+                )
+                assert source["scad_code"].startswith("difference()")
+                changed = tool_data(
+                    await session.call_tool(
+                        "modify_3d_model",
+                        {
+                            "model_id": model["model_id"],
+                            "scad_code": source["scad_code"].replace(
+                                "[30,20,8]", "[36,20,8]"
+                            ),
+                            "expected_revision": source["revision"],
+                        },
+                    )
+                )
+                fetched = await client.post(
+                    "/tool_call",
+                    json={
+                        "tool_name": "get_model_source",
+                        "tool_params": {"model_id": model["model_id"]},
+                    },
+                )
+                assert fetched.status_code == 200
+                assert "[36,20,8]" in fetched.json()["scad_code"]
+                conflict = await client.post(
+                    "/tool_call",
+                    json={
+                        "tool_name": "modify_3d_model",
+                        "tool_params": {
+                            "model_id": model["model_id"],
+                            "scad_code": "cube(100);",
+                            "expected_revision": source["revision"],
+                        },
+                    },
+                )
+                assert conflict.status_code == 409
+                assert conflict.json()["current_revision"] == changed["revision"]
                 page = await client.get(model["preview_url"])
                 assert page.status_code == 200
                 assert "<script>" not in page.text
@@ -186,6 +251,11 @@ async def test_http_mcp_and_downloads(tmp_path):
                     )
                     assert response.status_code == 200, response.text
                     assert len(response.content) > 0
+                    if format == "stl":
+                        mesh = trimesh.load_mesh(
+                            io.BytesIO(response.content), file_type="stl"
+                        )
+                        assert mesh.extents.tolist() == pytest.approx([36, 20, 8])
                     if format == "scad":
                         assert response.text.startswith("difference()")
                 invalid = await session.call_tool(
@@ -219,6 +289,10 @@ async def test_http_mcp_and_downloads(tmp_path):
                 422,
             ),
             ({"tool_name": "get_model", "tool_params": {"model_id": "bad"}}, 404),
+            (
+                {"tool_name": "get_model_source", "tool_params": {"model_id": "bad"}},
+                404,
+            ),
         ]:
             assert (await client.post("/tool_call", json=payload)).status_code == status
         assert (

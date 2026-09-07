@@ -30,7 +30,7 @@ The process waits for MCP messages on stdin. Use `-i` and **do not use `-t`**, w
 
 The named volume preserves models across container restarts. A fresh named volume receives the image's `/data` ownership. If you use a bind mount or an existing volume, make sure UID 10001 can write to it. Run only one server per volume.
 
-Returned paths such as `/data/MODEL_ID/REVISION/model.stl` are **inside the container**. `get_model_preview` returns the image directly over MCP. To copy an export to the host while the container is running, find its name with `docker ps`, then use the exact `model_file` returned by `export_model`:
+Returned paths such as `/data/MODEL_ID/REVISION/model.stl` are **inside the container**. `get_model_preview` returns the image directly over MCP. `get_model_source` returns the actual SCAD text and its revision, so a client can read and edit a custom model without a host filesystem mount. Pass that revision as `expected_revision` when submitting the edited source to avoid overwriting a newer edit. To copy an export to the host while the container is running, find its name with `docker ps`, then use the exact `model_file` returned by `export_model`:
 
 ```sh
 docker cp CONTAINER_NAME:/data/MODEL_ID/REVISION/model.stl ./model.stl
